@@ -1,0 +1,17 @@
+# VRM/FBX binaries
+*.vrm
+*.fbx
+
+# Pipeline output/working directories
+vrm_pipeline/vrm_in/
+vrm_pipeline/fbx_out/
+vrm_pipeline/vrm_done/
+vrm_pipeline/vrm_failed/
+
+# Logs
+*.log
+*.txt
+!README*.txt
+
+# Claude Code local settings
+.claude/
