@@ -1,6 +1,6 @@
-# VRM to FBX Batch Pipeline
+# VRM to FBX/GLB/DAE/OBJ Batch Pipeline
 
-Batch-converts `.vrm` avatar files into Cascadeur-ready `.fbx` files using Blender 4.1.1, the VRM Addon for Blender, and Auto-Rig Pro.
+Batch-converts `.vrm` avatar files into `.fbx` (with embedded textures/skins), `.glb`, `.dae` (COLLADA) and `.obj` (Wavefront) files using Blender 4.1.1, the VRM Addon for Blender, and Auto-Rig Pro.
 
 ## Prerequisites
 
@@ -55,7 +55,7 @@ vrm_pipeline\
     dump_ops.py
     README.md
     vrm_in\              <- place .vrm files here
-    fbx_out\             <- exported .fbx files appear here
+    fbx_out\             <- exported .fbx, .glb, .dae and .obj files appear here
     vrm_done\            <- successfully processed .vrm files are moved here
     vrm_failed\          <- failed .vrm files are moved here
 ```
@@ -64,15 +64,15 @@ No configuration is needed. Just drop `.vrm` files into `vrm_in\` and run the ba
 
 ## Usage
 
-### Basic (double-click)
+### UI mode (recommended for ARP)
 
-Double-click `run_vrm_to_fbx.bat`. It will automatically open a **persistent console window** that stays open after the pipeline finishes (or if any error occurs), so you can always read the output. Press any key to close the window when done.
+Double-click `run_vrm_to_fbx.bat` or run:
 
 ```bat
 run_vrm_to_fbx.bat
 ```
 
-This launches Blender **with UI** (the default), which is **required** for Auto-Rig Pro operators. Blender will open a visible window, run the pipeline, and close when done.
+This launches Blender **with UI** (default): a visible window opens, and Auto-Rig Pro can run. The batch opens a **persistent console** so you can read the output; press any key to close it when done. Use UI mode when you want full ARP processing (auto_scale, guess_markers, match_to_rig, bind_to_rig).
 
 ### Headless mode
 
@@ -80,7 +80,11 @@ This launches Blender **with UI** (the default), which is **required** for Auto-
 run_vrm_to_fbx.bat --headless
 ```
 
-Runs Blender in background mode (no window). **ARP operators will not work** in this mode — files will be moved to `vrm_failed\` with an explanatory error in the log. This mode is only useful for testing VRM import/export without ARP.
+Runs Blender in the background (no window). **ARP is skipped** in this mode. The pipeline still produces FBX output by using a **conversion-only** path: the imported VRM armature and mesh are exported as-is. Successfully converted files are moved to `vrm_done\`, not `vrm_failed\`. Use headless for batch runs where ARP is not required or when ARP is unavailable (e.g. version mismatch).
+
+### ARP and Blender version mismatch
+
+Auto-Rig Pro may report that it was "written for Blender 4.2" (or another version). If the addon’s required Blender version is **newer** than your installed Blender, the script detects this, logs a clear **WARNING**, and **skips ARP** for that run. It then uses the **fallback conversion-only export** so you still get an FBX (VRM rig + mesh as-is). No crash; output is still produced when possible.
 
 ### Override with custom paths
 
@@ -105,16 +109,16 @@ Both logs are timestamped so previous runs are never overwritten.
 ### What Happens
 
 1. The script scans the input directory for all `.vrm` files.
-2. For each file, Blender (with UI) will:
+2. For each file, Blender will:
    - Clean the scene (delete all objects, purge orphan data)
-   - Import the VRM model
-   - Identify the main armature and mesh
+   - Import the VRM model and identify the main armature and mesh
    - Apply transforms
-   - Run Auto-Rig Pro: auto_scale, guess_markers, match_to_rig, bind_to_rig
-   - Export a Cascadeur-compatible `.fbx`
-3. Successfully processed `.vrm` files are moved to `vrm_done\`.
-4. Failed `.vrm` files are moved to `vrm_failed\`.
-5. A timestamped log file is written to the output directory.
+   - **Try Auto-Rig Pro** (in UI mode, when version-compatible): auto_scale, guess_markers, match_to_rig, bind_to_rig
+   - If ARP fails at any step (context error, version mismatch, etc.), **fall back to conversion-only export**: export the VRM armature and mesh as-is to FBX
+   - Export `.fbx` (with embedded textures), `.glb`, `.dae` and `.obj` (either from ARP or from the fallback)
+3. Successfully processed `.vrm` files (ARP or fallback) are moved to `vrm_done\`.
+4. Only files that fail **both** ARP and conversion-only export are moved to `vrm_failed\`.
+5. A timestamped log file in the output directory shows per-file details and a summary: `total`, `arp_success`, `fallback_success`, `failed`.
 
 ### Output Structure
 
@@ -123,7 +127,27 @@ vrm_pipeline\
     bat_debug_log_20260215_153022.txt
     fbx_out\
         default-female.fbx
+        default-female.glb
+        default-female_dae\
+            default-female.dae
+            texture1.png
+            texture2.png
+        default-female_obj\
+            default-female.obj
+            default-female.mtl
+            texture1.png
+            texture2.png
         default-male.fbx
+        default-male.glb
+        default-male_dae\
+            default-male.dae
+            texture1.png
+            texture2.png
+        default-male_obj\
+            default-male.obj
+            default-male.mtl
+            texture1.png
+            texture2.png
         vrm_pipeline_20260215_153022.log
     vrm_done\
         default-female.vrm
@@ -163,15 +187,18 @@ If this fails, re-extract the Blender portable zip to the correct location.
 
 ### Auto-Rig Pro fails
 
-**Symptom:** `Missing ARP operators` or `auto_scale failed` in the log.
+**Symptom:** `Missing ARP operators`, `auto_scale failed`, or `context is incorrect` in the log.
+
+**Behaviour:** The pipeline **automatically falls back** to conversion-only export (VRM armature + mesh as-is). If that succeeds, the file is still moved to `vrm_done\` and you get an FBX. Only if **both** ARP and fallback fail does the file go to `vrm_failed\`.
 
 **Possible causes and fixes:**
 
-- **ARP not installed:** Install and enable it via Blender preferences, then save preferences.
-- **ARP version mismatch:** Some ARP versions register operators differently. Run `dump_ops.py` and look for any `arp` operators. If they exist under different names, the script may need updating.
-- **Armature incompatible:** ARP's `guess_markers()` works best with humanoid skeletons that use standard bone naming conventions. Non-standard VRM rigs (e.g., animal avatars, mechanical rigs) will likely fail.
-- **Running in headless mode:** ARP requires a real Blender UI context. If you see `ARP requires UI mode` in the log, remove the `--headless` flag. The default (no flag) runs with UI, which is correct.
-- **Context error:** ARP operators require specific object selection states. The script handles this automatically, but if you see context errors, ensure no other Blender instances are running.
+- **ARP not installed:** Install and enable it via Blender preferences. Without ARP, fallback export still runs.
+- **ARP "written for Blender 4.2" (or newer):** If ARP’s required Blender version is higher than your installed Blender, the script logs a WARNING and skips ARP; fallback export is used so FBX output is still produced.
+- **ARP version/operator names:** Some ARP builds register operators under different names. Run `dump_ops.py` to see available `arp` operators.
+- **Armature incompatible:** ARP works best with humanoid skeletons and standard bone names. Non-standard VRM rigs may fail; fallback export still produces an FBX.
+- **Headless mode:** ARP is skipped when you pass `--headless`; fallback export runs instead.
+- **Context error:** The script tries several selection/mode strategies for ARP. If all fail, fallback export is attempted automatically.
 
 ### FBX export fails
 

@@ -17,7 +17,7 @@ title VRM2FBX AutoRig
 :: =========================================================================
 :: run_vrm_to_fbx.bat
 :: =========================================================================
-:: Batch-converts .vrm files to Cascadeur-ready .fbx using Blender + ARP.
+:: Batch-converts .vrm files to .fbx (embedded textures) + .glb + .dae + .obj using Blender + ARP.
 ::
 :: Usage:
 ::     run_vrm_to_fbx.bat [--headless] [INPUT_DIR] [OUTPUT_DIR]
@@ -25,17 +25,18 @@ title VRM2FBX AutoRig
 :: Flags:
 ::     --headless   Run Blender in background mode (no GUI).
 ::                  Must be the FIRST argument if used.
-::                  WARNING: ARP operators require UI mode. Headless
-::                  mode will skip ARP and move files to failed.
+::                  Python script is told via 5th argument; ARP may be skipped.
+::                  Fallback conversion-only export still produces FBX when possible.
 ::
-:: Default (no flag) runs Blender with full UI, which is required
-:: for Auto-Rig Pro operators to function.
+:: Default (no flag) runs Blender with full UI for Auto-Rig Pro.
 ::
 :: Defaults (no arguments):
 ::     INPUT_DIR  = <script_dir>\vrm_in     (fallback: parent\vrm_in)
 ::     OUTPUT_DIR = <script_dir>\fbx_out    (fallback: parent\fbx_out)
 ::     DONE_DIR   = <script_dir>\vrm_done   (fallback: parent\vrm_done)
 ::     FAILED_DIR = <script_dir>\vrm_failed (fallback: parent\vrm_failed)
+::
+:: Exit codes: 0 = all succeeded, 2 = some failed, 1 = fatal (script cannot run)
 :: =========================================================================
 
 :: ---- Create timestamped log file (locale-independent via PowerShell) ----
@@ -46,7 +47,6 @@ set "LOGFILE=%~dp0bat_debug_log_!LOGSTAMP!.txt"
 echo.> "!LOGFILE!"
 
 :: ---- Helper subroutine: log to both console and file ----
-:: Use "call :LOG message" throughout the script.
 goto :AFTER_LOG_FUNC
 :LOG
 set "LOGMSG=%~1"
@@ -72,33 +72,33 @@ set "BLENDER_EXE=D:\DevTools\blender 4.1\blender-4.1.1-windows-x64\blender.exe"
 
 :: ==== 2. Validate Blender exe ====
 if not exist "!BLENDER_EXE!" (
-    echo ERROR: Blender not found at: !BLENDER_EXE!
-    echo ERROR: Blender not found at: !BLENDER_EXE!>> "!LOGFILE!"
+    call :LOG "ERROR: Blender not found at: !BLENDER_EXE!"
     pause
-    exit /b 9009
+    exit /b 1
 )
 
 :: ==== 3. Resolve script directory and default folders ====
 set "SCRIPT_DIR=%~dp0"
+if "!SCRIPT_DIR!"=="" set "SCRIPT_DIR=%CD%\"
 set "INPUT_DIR=!SCRIPT_DIR!vrm_in"
+set "INPUT_DIR_ALT=!SCRIPT_DIR!..\vrm_in"
+for %%I in ("!INPUT_DIR_ALT!") do set "INPUT_DIR_ALT=%%~fI"
 set "OUTPUT_DIR=!SCRIPT_DIR!fbx_out"
 set "DONE_DIR=!SCRIPT_DIR!vrm_done"
 set "FAILED_DIR=!SCRIPT_DIR!vrm_failed"
 
 :: ---- Parse --headless flag (must be first argument if used) ----
-:: DEFAULT: UI mode (no --background flag)
 set "HEADLESS="
 if /i "%~1"=="--headless" (
-    set "HEADLESS=--background"
+    set "HEADLESS=1"
     shift
 )
 
 :: ---- Override INPUT_DIR / OUTPUT_DIR from arguments if provided ----
-if not "%~1"=="" set "INPUT_DIR=%~1"
+if not "%~1"=="" set "INPUT_DIR=%~1" & set "INPUT_DIR_USER_SET=1"
 if not "%~2"=="" set "OUTPUT_DIR=%~2"
 
 :: ==== 4. Parent folder fallback ====
-:: If default folder does not exist but parent-level folder does, use parent.
 set "PARENT_DIR=!SCRIPT_DIR!.."
 if not exist "!INPUT_DIR!"  if exist "!PARENT_DIR!\vrm_in"     set "INPUT_DIR=!PARENT_DIR!\vrm_in"
 if not exist "!OUTPUT_DIR!" if exist "!PARENT_DIR!\fbx_out"    set "OUTPUT_DIR=!PARENT_DIR!\fbx_out"
@@ -111,130 +111,83 @@ mkdir "!OUTPUT_DIR!" 2>nul
 mkdir "!DONE_DIR!" 2>nul
 mkdir "!FAILED_DIR!" 2>nul
 
-:: ==== 6. Print resolved paths BEFORE running Blender ====
-:: Using direct echo with delayed expansion (most reliable for paths).
+:: ==== 6. Print resolved paths ====
 call :LOG "--- Resolved Paths ---"
-echo BLENDER_EXE=!BLENDER_EXE!
-echo BLENDER_EXE=!BLENDER_EXE!>> "!LOGFILE!"
-echo SCRIPT_DIR=!SCRIPT_DIR!
-echo SCRIPT_DIR=!SCRIPT_DIR!>> "!LOGFILE!"
-echo INPUT_DIR=!INPUT_DIR!
-echo INPUT_DIR=!INPUT_DIR!>> "!LOGFILE!"
-echo OUTPUT_DIR=!OUTPUT_DIR!
-echo OUTPUT_DIR=!OUTPUT_DIR!>> "!LOGFILE!"
-echo DONE_DIR=!DONE_DIR!
-echo DONE_DIR=!DONE_DIR!>> "!LOGFILE!"
-echo FAILED_DIR=!FAILED_DIR!
-echo FAILED_DIR=!FAILED_DIR!>> "!LOGFILE!"
+call :LOG "INPUT_DIR=!INPUT_DIR!"
+call :LOG "OUTPUT_DIR=!OUTPUT_DIR!"
+call :LOG "DONE_DIR=!DONE_DIR!"
+call :LOG "FAILED_DIR=!FAILED_DIR!"
 call :LOG ""
 
 :: ==== 7. Validate Python script ====
 set "PYTHON_SCRIPT=!SCRIPT_DIR!vrm_to_fbx_batch.py"
 if not exist "!PYTHON_SCRIPT!" (
-    echo ERROR: Python script not found: !PYTHON_SCRIPT!
-    echo ERROR: Python script not found: !PYTHON_SCRIPT!>> "!LOGFILE!"
+    call :LOG "ERROR: Python script not found: !PYTHON_SCRIPT!"
     pause
-    exit /b 2
+    exit /b 1
 )
 
-:: ---- Count VRM files ----
+:: ---- Count VRM files; fallback to project root vrm_in if default has 0 ----
 set "VRM_COUNT=0"
 for %%F in ("!INPUT_DIR!\*.vrm") do set /a VRM_COUNT+=1
-
+if !VRM_COUNT! equ 0 if not defined INPUT_DIR_USER_SET (
+    set "VRM_ALT=0"
+    for %%F in ("!INPUT_DIR_ALT!\*.vrm") do set /a VRM_ALT+=1
+    if !VRM_ALT! gtr 0 (
+        set "INPUT_DIR=!INPUT_DIR_ALT!"
+        set "VRM_COUNT=!VRM_ALT!"
+        call :LOG "No VRMs in default folder; using project root vrm_in."
+    )
+)
+call :LOG "Using input folder: !INPUT_DIR!"
 call :LOG "VRM files found: !VRM_COUNT!"
 
 if !VRM_COUNT! equ 0 (
     call :LOG "No .vrm files found in: !INPUT_DIR!"
-    call :LOG ""
     call :LOG "Place your .vrm files there and run this script again."
     set "EXIT_CODE=0"
-    goto :end
+    goto :summary
 )
 
+:: ---- Mode and exact Blender command (build display string, then run) ----
+set "CMD_LOG=!BLENDER_EXE!"
+if defined HEADLESS (
+    call :LOG "MODE: HEADLESS (Blender --background, script receives --headless)"
+    set "CMD_LOG=!CMD_LOG! --background --python "!PYTHON_SCRIPT!""
+    set "CMD_LOG=!CMD_LOG! -- "!INPUT_DIR!" "!OUTPUT_DIR!" "!DONE_DIR!" "!FAILED_DIR!" --headless"
+) else (
+    call :LOG "MODE: UI (default, no --background)"
+    set "CMD_LOG=!CMD_LOG! --python "!PYTHON_SCRIPT!""
+    set "CMD_LOG=!CMD_LOG! -- "!INPUT_DIR!" "!OUTPUT_DIR!" "!DONE_DIR!" "!FAILED_DIR!"
+)
+call :LOG "--- Exact Blender command ---"
+call :LOG "!CMD_LOG!"
 call :LOG ""
 
-:: ---- Launch mode message ----
-:: NOTE: Using goto instead of if/else to avoid CMD parsing ')' inside
-:: quoted strings as block-closers.
-if defined HEADLESS goto :mode_headless
-call :LOG "============================================================="
-call :LOG "  MODE: UI (default)"
-call :LOG "  Blender will open with a visible window."
-call :LOG "  This is REQUIRED for Auto-Rig Pro operators."
-call :LOG "============================================================="
-goto :mode_done
-:mode_headless
-call :LOG "============================================================="
-call :LOG "  MODE: HEADLESS (--background)"
-call :LOG "  WARNING: ARP operators will NOT work in this mode."
-call :LOG "  Files requiring ARP will be moved to the failed folder."
-call :LOG "  Remove --headless flag to enable ARP processing."
-call :LOG "============================================================="
-:mode_done
-call :LOG ""
-
-:: ==== 8. Build and execute Blender command ====
-call :LOG "--- Blender Command ---"
-
-:: NOTE: Using goto to avoid ')' in echo strings breaking CMD block parsing.
-if defined HEADLESS goto :cmd_headless
-
-:: --- UI mode: no --background ---
-echo "!BLENDER_EXE!" --python "!PYTHON_SCRIPT!" -- "!INPUT_DIR!" "!OUTPUT_DIR!" "!DONE_DIR!" "!FAILED_DIR!"
-echo "!BLENDER_EXE!" --python "!PYTHON_SCRIPT!" -- "!INPUT_DIR!" "!OUTPUT_DIR!" "!DONE_DIR!" "!FAILED_DIR!">> "!LOGFILE!"
-call :LOG ""
-"!BLENDER_EXE!" --python "!PYTHON_SCRIPT!" -- "!INPUT_DIR!" "!OUTPUT_DIR!" "!DONE_DIR!" "!FAILED_DIR!"
-goto :cmd_done
-
-:cmd_headless
-:: --- Headless mode: with --background ---
-echo "!BLENDER_EXE!" --background --python "!PYTHON_SCRIPT!" -- "!INPUT_DIR!" "!OUTPUT_DIR!" "!DONE_DIR!" "!FAILED_DIR!"
-echo "!BLENDER_EXE!" --background --python "!PYTHON_SCRIPT!" -- "!INPUT_DIR!" "!OUTPUT_DIR!" "!DONE_DIR!" "!FAILED_DIR!">> "!LOGFILE!"
-call :LOG ""
-"!BLENDER_EXE!" --background --python "!PYTHON_SCRIPT!" -- "!INPUT_DIR!" "!OUTPUT_DIR!" "!DONE_DIR!" "!FAILED_DIR!"
-
-:cmd_done
+:: ==== 8. Execute Blender ====
+if defined HEADLESS (
+    "!BLENDER_EXE!" --background --python "!PYTHON_SCRIPT!" -- "!INPUT_DIR!" "!OUTPUT_DIR!" "!DONE_DIR!" "!FAILED_DIR!" --headless
+) else (
+    "!BLENDER_EXE!" --python "!PYTHON_SCRIPT!" -- "!INPUT_DIR!" "!OUTPUT_DIR!" "!DONE_DIR!" "!FAILED_DIR!"
+)
 set "EXIT_CODE=!ERRORLEVEL!"
 
-call :LOG ""
-call :LOG "Blender exited with code: !EXIT_CODE!"
-call :LOG "====================================================================="
+:: ---- Normalize exit: 0 = success, 2 = partial, 1 = fatal ----
+if !EXIT_CODE! equ 0 goto :summary
+if !EXIT_CODE! equ 2 goto :summary
+set "EXIT_CODE=1"
 
-:: ---- Exit-code summary ----
-:: NOTE: Using goto instead of if/else to avoid ')' in messages breaking
-:: CMD block parsing.
-if !EXIT_CODE! equ 0 goto :result_ok
-if !EXIT_CODE! equ 2 goto :result_partial
-goto :result_error
-
-:result_ok
-call :LOG "  Pipeline completed successfully. All files processed."
-goto :result_done
-
-:result_partial
-call :LOG "  Pipeline completed with some failures."
-goto :result_done
-
-:result_error
-call :LOG "  Pipeline encountered a critical error - exit code: !EXIT_CODE!"
-call :LOG "  Check console output above for details."
-
-:result_done
-call :LOG "====================================================================="
-call :LOG ""
-echo   Done folder:   !DONE_DIR!
-echo   Done folder:   !DONE_DIR!>> "!LOGFILE!"
-echo   Failed folder: !FAILED_DIR!
-echo   Failed folder: !FAILED_DIR!>> "!LOGFILE!"
-echo   Output folder: !OUTPUT_DIR!
-echo   Output folder: !OUTPUT_DIR!>> "!LOGFILE!"
-call :LOG ""
-call :LOG "Done."
-
-:end
-call :LOG ""
-call :LOG "Script finished. Exit code: !EXIT_CODE!"
-call :LOG "Log saved to: !LOGFILE!"
+:summary
+call :LOG "============================================================="
+if !EXIT_CODE! equ 0 call :LOG "  Result: All files processed successfully."
+if !EXIT_CODE! equ 2 call :LOG "  Result: Some files failed (see pipeline log)."
+if !EXIT_CODE! equ 1 call :LOG "  Result: Fatal error (exit code: !EXIT_CODE!)."
+call :LOG "  Done folder:   !DONE_DIR!"
+call :LOG "  Failed folder: !FAILED_DIR!"
+call :LOG "  Output folder: !OUTPUT_DIR!"
+call :LOG "  Script finished. Exit code: !EXIT_CODE!"
+call :LOG "  Log saved to: !LOGFILE!"
+call :LOG "============================================================="
 echo.
 echo Press any key to close this window...
 pause >nul
